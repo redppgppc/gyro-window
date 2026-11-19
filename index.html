@@ -7,11 +7,18 @@
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: #fff; font-family: sans-serif; }
   #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 22px; background: #000c; }
+  #credit { position: fixed; left: 8px; bottom: 6px; font-size: 11px; opacity: .7; }
+  #credit a { color: #fff; }
 </style>
 </head>
 <body>
 <div id="start">탭해서 시작</div>
+<!-- CC-BY 표기: 모델 제목, 제작자, 원본 링크, 라이선스 -->
+<!-- TODO: 제작자 정보 확인 후 주석 해제
+<div id="credit">"<a href="MODEL_URL">Little sea house</a>" by <a href="AUTHOR_URL">AUTHOR_NAME</a>, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></div>
+-->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script>
 // 화면 = z=0 평면에 뚫린 창문. 단위는 cm. 눈 위치에 맞춰 비대칭(off-axis) 투영을 한다.
 const EYE_DIST = 30;  // 눈-화면 거리 (조정값)
@@ -31,7 +38,7 @@ const sun = new THREE.DirectionalLight(0xffffff, 0.6);
 sun.position.set(5, 10, 10);
 scene.add(sun);
 
-// 화면 뒤로 이어지는 격자 방 + 깊이가 다른 물체들 (하나는 화면 앞으로 튀어나옴)
+// 화면 뒤로 이어지는 격자 방
 let room;
 function buildRoom() {
   if (room) scene.remove(room);
@@ -46,16 +53,28 @@ function buildRoom() {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
   room.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x33ccff })));
-
-  const objs = [[-0.25, -0.3, -30, 0xff5555], [0.25, 0.1, -18, 0x55ff88], [-0.1, 0.3, -8, 0xffcc33], [0.15, -0.2, 4, 0x8877ff]];
-  objs.forEach(([u, v, z, c], i) => {
-    const geo = i % 2 ? new THREE.BoxGeometry(1.5, 1.5, 1.5) : new THREE.SphereGeometry(0.9, 32, 16);
-    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: c }));
-    m.position.set(u * W, v * H, z);
-    room.add(m);
-  });
   scene.add(room);
+  if (model) model.position.y = -H / 2 - modelBottom; // 바닥에 앉힘 (H가 바뀌면 다시)
 }
+
+// 모델: 가로가 화면 폭의 MODEL_FIT배가 되게 맞추고, 화면 뒤 MODEL_Z 깊이 바닥에 놓는다
+const MODEL_FIT = 0.9;  // 조정값
+const MODEL_Z = -14;    // 조정값 (0=화면 면, 음수=화면 안쪽)
+let model = null, modelBottom = 0, mixer = null;
+new THREE.GLTFLoader().load('models/little_sea_house.glb', gltf => {
+  model = gltf.scene;
+  const box = new THREE.Box3().setFromObject(model), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+  const s = W * MODEL_FIT / Math.max(size.x, size.z);
+  model.scale.setScalar(s);
+  model.position.set(-c.x * s, 0, MODEL_Z - c.z * s);
+  modelBottom = box.min.y * s;
+  model.position.y = -H / 2 - modelBottom;
+  scene.add(model);
+  if (gltf.animations.length) {
+    mixer = new THREE.AnimationMixer(model);
+    mixer.clipAction(gltf.animations[0]).play();
+  }
+}, undefined, err => console.error('모델 로드 실패', err));
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
@@ -72,8 +91,9 @@ function frustum(ex, ey, ez, n) {
 }
 console.assert((([l, r, t, b]) => l === -r && t === -b)(frustum(0, 0, EYE_DIST, 1)), '중앙 시점이면 대칭 절두체여야 함');
 
-const eye = { x: 0, y: 0 }, target = { x: 0, y: 0 };
+const eye = { x: 0, y: 0 }, target = { x: 0, y: 0 }, clock = new THREE.Clock();
 function animate() {
+  if (mixer) mixer.update(clock.getDelta());
   eye.x += (target.x - eye.x) * SMOOTH;
   eye.y += (target.y - eye.y) * SMOOTH;
   const n = 0.5, [l, r, t, b] = frustum(eye.x, eye.y, EYE_DIST, n);
