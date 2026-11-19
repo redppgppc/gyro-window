@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Gyro Window</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: #fff; font-family: sans-serif; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 22px; background: #000c; }
+</style>
+</head>
+<body>
+<div id="start">탭해서 시작</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// 화면 = z=0 평면에 뚫린 창문. 단위는 cm. 눈 위치에 맞춰 비대칭(off-axis) 투영을 한다.
+const EYE_DIST = 30;  // 눈-화면 거리 (조정값)
+const GAIN = 1.0;     // 기울기 -> 시점 이동 배율 (조정값, 효과가 약하면 키우기)
+const SMOOTH = 0.15;  // 0~1, 작을수록 부드럽고 느림
+const DEPTH = 40;     // 방 깊이
+const W = 7;          // 화면 가로 (폰 대략 7cm)
+let H = 7;            // 화면 세로, 비율에 맞춰 resize에서 계산
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1));
+const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+sun.position.set(5, 10, 10);
+scene.add(sun);
+
+// 화면 뒤로 이어지는 격자 방 + 깊이가 다른 물체들 (하나는 화면 앞으로 튀어나옴)
+let room;
+function buildRoom() {
+  if (room) scene.remove(room);
+  room = new THREE.Group();
+  const x = W / 2, y = H / 2, p = [];
+  for (let z = 0; z >= -DEPTH; z -= 4)
+    p.push(-x,-y,z, x,-y,z,  x,-y,z, x,y,z,  x,y,z, -x,y,z,  -x,y,z, -x,-y,z);
+  for (let i = 0; i <= 4; i++) {
+    const a = -x + W * i / 4, b = -y + H * i / 4;
+    p.push(a,-y,0, a,-y,-DEPTH,  a,y,0, a,y,-DEPTH,  -x,b,0, -x,b,-DEPTH,  x,b,0, x,b,-DEPTH);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+  room.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x33ccff })));
+
+  const objs = [[-0.25, -0.3, -30, 0xff5555], [0.25, 0.1, -18, 0x55ff88], [-0.1, 0.3, -8, 0xffcc33], [0.15, -0.2, 4, 0x8877ff]];
+  objs.forEach(([u, v, z, c], i) => {
+    const geo = i % 2 ? new THREE.BoxGeometry(1.5, 1.5, 1.5) : new THREE.SphereGeometry(0.9, 32, 16);
+    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: c }));
+    m.position.set(u * W, v * H, z);
+    room.add(m);
+  });
+  scene.add(room);
+}
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  H = W * innerHeight / innerWidth;
+  buildRoom();
+}
+addEventListener('resize', resize);
+resize();
+
+// 눈(ex,ey,ez)에서 화면 네 모서리를 지나는 절두체 (near 평면 기준)
+function frustum(ex, ey, ez, n) {
+  const k = n / ez;
+  return [(-W / 2 - ex) * k, (W / 2 - ex) * k, (H / 2 - ey) * k, (-H / 2 - ey) * k];
+}
+console.assert((([l, r, t, b]) => l === -r && t === -b)(frustum(0, 0, EYE_DIST, 1)), '중앙 시점이면 대칭 절두체여야 함');
+
+const eye = { x: 0, y: 0 }, target = { x: 0, y: 0 };
+function animate() {
+  eye.x += (target.x - eye.x) * SMOOTH;
+  eye.y += (target.y - eye.y) * SMOOTH;
+  const n = 0.5, [l, r, t, b] = frustum(eye.x, eye.y, EYE_DIST, n);
+  camera.position.set(eye.x, eye.y, EYE_DIST);
+  camera.projectionMatrix.makePerspective(l, r, t, b, n, 500);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();
+
+// 자이로: 처음(또는 탭한 순간) 자세를 기준으로 기울인 만큼 눈이 반대로 이동한 것으로 본다.
+// ponytail: 세로 모드만 고려, 폰을 거의 수직(beta≈90)으로 세우면 gamma가 튈 수 있음. 필요하면 quaternion 방식으로 교체.
+let base = null;
+addEventListener('deviceorientation', e => {
+  if (e.beta == null) return;
+  if (!base) base = { b: e.beta, g: e.gamma };
+  const rad = Math.PI / 180;
+  target.x = -Math.sin((e.gamma - base.g) * rad) * EYE_DIST * GAIN;
+  target.y = Math.sin((e.beta - base.b) * rad) * EYE_DIST * GAIN;
+});
+
+// PC 테스트용: 마우스로 시점 이동
+addEventListener('pointermove', e => {
+  if (e.pointerType !== 'mouse') return;
+  target.x = (e.clientX / innerWidth * 2 - 1) * W;
+  target.y = -(e.clientY / innerHeight * 2 - 1) * H;
+});
+
+document.getElementById('start').onclick = async e => {
+  e.currentTarget.remove();
+  // iOS는 사용자 탭 안에서 권한 요청 필요
+  if (window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission) {
+    try { await DeviceOrientationEvent.requestPermission(); } catch (err) {}
+  }
+};
+renderer.domElement.addEventListener('click', () => { base = null; }); // 탭하면 현재 자세로 영점 재설정
+</script>
+</body>
+</html>
